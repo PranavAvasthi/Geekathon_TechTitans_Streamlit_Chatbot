@@ -1,0 +1,15 @@
+langchain>=0.1.0
+python-dotenv>=1.0.0
+gitpython>=3.1.40
+langchain-community>=0.0.10
+chromadb>=0.4.22
+sentence-transformers>=2.2.2
+beautifulsoup4>=4.12.2
+markdown>=3.5.1
+tenacity>=8.2.3
+requests>=2.31.0
+openai>=1.6.1
+langchain-openai>=0.0.5
+fastapi>=0.109.0
+uvicorn>=0.27.0
+python-multipart>=0.0.6 
