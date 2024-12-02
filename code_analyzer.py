@@ -18,6 +18,7 @@ from tenacity import ( # type: ignore
     retry_if_exception_type
 )
 import requests.exceptions
+import re
 
 # Load environment variables
 load_dotenv()
@@ -165,99 +166,96 @@ class CodeAnalyzer:
         
         return None
 
-    def get_code_explanation(self, query: str) -> Optional[str]:
-        """Get explanation for code-related queries."""
+    def get_code_explanation(self, query: str) -> str:
+        """Get explanation for code-related queries with formatted snippets."""
         if not self.conversation_chain:
             return "❌ Please load a repository first."
         
         try:
-            # Add timeout handling
-            start_time = time.time()
-            timeout = 90  # seconds
+            # Detect query type
+            is_logic_question = any(keyword in query.lower() for keyword in [
+                'can i', 'how to', 'is it possible', 'what if', 'should i',
+                'better to', 'difference between', 'compare', 'versus', 'vs'
+            ])
             
-            # Check if query is about specific file
-            show_code = any(keyword in query.lower() for keyword in ["show", "display", "what's in", "what is in", "content of"])
+            # Extract file name from query if present
+            file_match = re.search(r'(?:explain|show|analyze).*?(?:code|file).*?[\'"`]?([\w\-./]+\.\w+)', query.lower())
+            show_code = 'show' in query.lower() or 'display' in query.lower()
             
-            # Find the requested file using improved path handling
-            requested_file = self._find_file_path(query)
-            
-            if requested_file:
-                # Get the file content directly from our storage
+            if file_match:
+                requested_file = file_match.group(1)
+                
+                # Find the closest matching file
+                matching_files = [f for f in self.file_map.values() if requested_file.lower() in str(f).lower()]
+                if not matching_files:
+                    return f"""❌ File '{requested_file}' not found. Available files:
+                    
+```
+{chr(10).join(['- ' + str(f) for f in sorted(set(self.file_map.values()))])}
+```"""
+                
+                requested_file = str(matching_files[0])
                 file_content = self.file_contents.get(requested_file)
                 
                 if not file_content:
-                    return f"❌ I found the file '{requested_file}' but couldn't retrieve its contents. Please try reloading the repository."
+                    return f"❌ Couldn't read contents of '{requested_file}'"
                 
-                # If user just wants to see the code, return it directly
-                if show_code:
-                    file_extension = Path(requested_file).suffix[1:]
-                    return f"""📄 Contents of {Path(requested_file).name} (from {requested_file}):
-
-```{file_extension}
-{file_content}
-```"""
-                
-                # Enhanced query with file content
+                # Format the response with code snippet and explanation
+                file_extension = Path(requested_file).suffix[1:]
                 enhanced_query = f"""
-                Question about file: {Path(requested_file).name}
-                File path: {requested_file}
+                Analyze this code file and provide a detailed explanation:
                 
-                File content:
-                ```{Path(requested_file).suffix[1:]}
+                File: {Path(requested_file).name}
+                Path: {requested_file}
+                
+                ```{file_extension}
                 {file_content}
                 ```
                 
-                User question: {query}
+                Please provide:
+                1. A brief overview of the file's purpose
+                2. Key components and their functionality
+                3. Important methods/functions and their roles
+                4. Any notable patterns or design choices
+                5. Dependencies and their usage
                 
-                Please provide a detailed explanation of the code, including its purpose, structure, and key components.
-                If the user is asking to see the code, include the code snippet in your response.
+                Format the response with clear sections and include relevant code snippets when explaining specific parts.
                 """
+                
+                response = self.conversation_chain({"question": enhanced_query})
+                
+                # Format the response
+                formatted_response = f"""## 📄 {Path(requested_file).name}
+
+{response['answer']}
+
+**File Location:** `{requested_file}`
+"""
+                
+                # Add source information if available
+                if hasattr(response, 'source_documents') and response.source_documents:
+                    sources = set(doc.metadata['file'] for doc in response.source_documents)
+                    formatted_response += "\n\n**Related Files:**\n" + "\n".join(f"- `{src}`" for src in sources)
+                
+                return formatted_response
+                
             else:
-                # If no specific file is mentioned, provide repository structure
-                # Group files by directory for better organization
-                files_by_dir = {}
-                for file_path in sorted(set(self.file_map.values())):
-                    dir_path = str(Path(file_path).parent)
-                    if dir_path not in files_by_dir:
-                        files_by_dir[dir_path] = []
-                    files_by_dir[dir_path].append(Path(file_path).name)
+                # General code query
+                return f"""Please specify which file you'd like me to explain. Available files:
+
+```
+{chr(10).join(['- ' + str(f) for f in sorted(set(self.file_map.values()))])}
+```
+
+Example queries:
+- "Explain the code in app.py"
+- "Show me the contents of utils.js"
+- "Analyze the code in src/components/Header.tsx"
+"""
                 
-                # Format the file structure
-                file_structure = []
-                for dir_path, files in sorted(files_by_dir.items()):
-                    file_structure.append(f"\n📁 {dir_path}:")
-                    for file in sorted(files):
-                        file_structure.append(f"  - {file}")
-                
-                file_list = "\n".join(file_structure)
-                enhanced_query = f"""
-                Repository structure:
-                {file_list}
-                
-                User question: {query}
-                
-                Note: The file might be in one of these directories. Please check the repository structure and inform the user about available files.
-                """
-            
-            # Check for timeout
-            if time.time() - start_time > timeout:
-                return "⚠️ Request timed out. Please try again with a more specific query."
-            
-            response = self.conversation_chain({"question": enhanced_query})
-            
-            # Add source information to response
-            if hasattr(response, 'source_documents') and response.source_documents:
-                sources = set(doc.metadata['file'] for doc in response.source_documents)
-                source_info = "\n\n📁 Sources:\n" + "\n".join(f"- {src}" for src in sources)
-                return response['answer'] + source_info
-            
-            return response['answer']
-            
         except Exception as e:
-            print(f"Detailed error: {str(e)}")
-            if "timeout" in str(e).lower():
-                return "⚠️ The request timed out. Please try:\n1. A more specific query\n2. Asking about a smaller part of the code\n3. Breaking your question into smaller parts"
-            return f"❌ Error generating explanation: {str(e)}"
+            print(f"Error: {str(e)}")
+            return f"❌ Error analyzing code: {str(e)}"
 
     def reset(self):
         """Reset the analyzer state."""

@@ -45,7 +45,7 @@ class CodeExplainerBot:
             return f"Error generating response: {str(e)}"
 
 def main():
-    st.title("💻 Code Explainer Bot")
+    st.title("CodeLens - 💻 Code Explainer Bot")
     
     # Initialize session state
     if "messages" not in st.session_state:
